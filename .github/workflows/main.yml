@@ -45,7 +45,7 @@ jobs:
           }
 
           group = 'com.pig2.slayerplus'
-          version = '1.0.0'
+          version = '1.1.0'
           base { archivesName = 'pig2_slayer_plus' }
 
           java.toolchain.languageVersion = JavaLanguageVersion.of(17)
@@ -81,10 +81,10 @@ jobs:
 
           [[mods]]
           modId="pig2_slayer_plus"
-          version="1.0.0"
+          version="1.1.0"
           displayName="Pig Slayer Plus"
           authors="you"
-          description='''Addon cho pig2_slayer: bao ve nguoi choi (tag p2s_god) va xoa entity (/p2s remove).'''
+          description='''Addon cho pig2_slayer: cam dreams blade la bat tu, chuot phai xoa quai, danh la xoa.'''
 
           [[dependencies.pig2_slayer_plus]]
           modId="forge"
@@ -116,6 +116,7 @@ jobs:
             "refmap": "pig2slayerplus.refmap.json",
             "priority": 2147483647,
             "mixins": [
+              "EntityAccessor",
               "EntityMixin",
               "LivingEntityMixin",
               "PlayerMixin",
@@ -142,17 +143,55 @@ jobs:
           cat > src/main/java/com/pig2/slayerplus/GodHelper.java <<'P2S_EOF'
           package com.pig2.slayerplus;
 
+          import net.minecraft.resources.ResourceLocation;
           import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.LivingEntity;
+          import net.minecraft.world.item.Item;
+          import net.minecraft.world.item.ItemStack;
+          import net.minecraftforge.registries.ForgeRegistries;
 
           public final class GodHelper {
               public static final String TAG = "p2s_god";
+              private static final ResourceLocation BLADE_ID = new ResourceLocation("pig2_slayer", "slayer_blade");
+              private static volatile Item blade;
 
               private GodHelper() {
               }
 
+              /** Nhan dien dreams blade cua pig2_slayer theo ten dang ky, khong can phu thuoc compile. */
+              public static boolean isBlade(ItemStack s) {
+                  try {
+                      if (s == null || s.isEmpty()) {
+                          return false;
+                      }
+                      Item b = blade;
+                      if (b == null) {
+                          if (!ForgeRegistries.ITEMS.containsKey(BLADE_ID)) {
+                              return false;
+                          }
+                          b = ForgeRegistries.ITEMS.getValue(BLADE_ID);
+                          blade = b;
+                      }
+                      return s.getItem() == b;
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              public static boolean holdsBlade(LivingEntity e) {
+                  return isBlade(e.getMainHandItem()) || isBlade(e.getOffhandItem());
+              }
+
+              /** Bat tu neu co tag p2s_god HOAC dang cam dreams blade. */
               public static boolean isGod(Entity e) {
                   try {
-                      return e != null && e.getTags().contains(TAG);
+                      if (e == null) {
+                          return false;
+                      }
+                      if (e.getTags().contains(TAG)) {
+                          return true;
+                      }
+                      return e instanceof LivingEntity le && holdsBlade(le);
                   } catch (Throwable t) {
                       return false;
                   }
@@ -161,6 +200,249 @@ jobs:
               /** Chi chan viec bi giet/xoa; van cho phep doi chieu, unload chunk. */
               public static boolean blocksRemoval(Entity.RemovalReason r) {
                   return r == Entity.RemovalReason.KILLED || r == Entity.RemovalReason.DISCARDED;
+              }
+          }
+          P2S_EOF
+          mkdir -p src/main/java/com/pig2/slayerplus
+          cat > src/main/java/com/pig2/slayerplus/BladePower.java <<'P2S_EOF'
+          package com.pig2.slayerplus;
+
+          import com.pig2.slayerplus.mixin.EntityAccessor;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.server.level.ServerLevel;
+          import net.minecraft.server.level.ServerPlayer;
+          import net.minecraft.world.effect.MobEffectCategory;
+          import net.minecraft.world.effect.MobEffectInstance;
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.LivingEntity;
+          import net.minecraft.world.entity.Mob;
+          import net.minecraft.world.entity.decoration.ArmorStand;
+          import net.minecraft.world.level.entity.EntityInLevelCallback;
+          import net.minecraft.world.entity.monster.Enemy;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.entity.projectile.Projectile;
+          import net.minecraft.world.phys.AABB;
+          import net.minecraftforge.common.Tags;
+
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public final class BladePower {
+              public static final double RADIUS = 96.0;
+
+              private BladePower() {
+              }
+
+              /** Xoa entity theo nhieu lop: setRemoved -> discard -> goi thang levelCallback. */
+              public static boolean forceRemove(Entity e) {
+                  if (e == null || e instanceof Player || GodHelper.isGod(e)) {
+                      return false;
+                  }
+                  try {
+                      e.setRemoved(Entity.RemovalReason.KILLED);
+                  } catch (Throwable ignored) {
+                  }
+                  if (e.isRemoved()) {
+                      return true;
+                  }
+                  try {
+                      e.discard();
+                  } catch (Throwable ignored) {
+                  }
+                  if (e.isRemoved()) {
+                      return true;
+                  }
+                  try {
+                      EntityAccessor acc = (EntityAccessor) e;
+                      if (acc.p2s$getRemovalReason() == null) {
+                          acc.p2s$setRemovalReason(Entity.RemovalReason.KILLED);
+                      }
+                      EntityInLevelCallback cb = acc.p2s$getLevelCallback();
+                      if (cb != null) {
+                          cb.onRemove(Entity.RemovalReason.KILLED);
+                      }
+                      return true;
+                  } catch (Throwable ignored) {
+                  }
+                  return e.isRemoved();
+              }
+
+              private static boolean shouldWipe(Entity e, Player user, boolean all) {
+                  if (e == user || e instanceof Player || e instanceof ArmorStand || GodHelper.isGod(e)) {
+                      return false;
+                  }
+                  if (e instanceof Projectile p) {
+                      return p.getOwner() != user;
+                  }
+                  if (!(e instanceof LivingEntity)) {
+                      return false;
+                  }
+                  if (all) {
+                      return true;
+                  }
+                  if (e instanceof Enemy) {
+                      return true;
+                  }
+                  if (e.getType().is(Tags.EntityTypes.BOSSES)) {
+                      return true;
+                  }
+                  return e instanceof Mob m && m.getTarget() == user;
+              }
+
+              /** Chuot phai: xoa quai/boss/dan trong ban kinh. Shift + chuot phai: xoa moi sinh vat (tru nguoi choi). */
+              public static int sweep(ServerPlayer player, boolean all) {
+                  ServerLevel level = player.serverLevel();
+                  AABB box = player.getBoundingBox().inflate(RADIUS);
+                  List<Entity> targets = new ArrayList<>(level.getEntities((Entity) null, box, e -> shouldWipe(e, player, all)));
+                  int n = 0;
+                  for (Entity e : targets) {
+                      if (forceRemove(e)) {
+                          n++;
+                      }
+                  }
+                  return n;
+              }
+
+              /** Duy tri trang thai bat tu moi tick cho nguoi dang cam kiem. */
+              public static void maintain(Player p) {
+                  p.setHealth(p.getMaxHealth());
+                  p.getFoodData().setFoodLevel(20);
+                  p.getFoodData().setSaturation(20.0F);
+                  p.clearFire();
+                  p.fallDistance = 0.0F;
+                  p.setAirSupply(p.getMaxAirSupply());
+                  for (MobEffectInstance inst : new ArrayList<>(p.getActiveEffects())) {
+                      if (inst.getEffect().getCategory() == MobEffectCategory.HARMFUL) {
+                          p.removeEffect(inst.getEffect());
+                      }
+                  }
+              }
+
+              public static void say(Player p, String msg) {
+                  p.displayClientMessage(Component.literal(msg), true);
+              }
+          }
+          P2S_EOF
+          mkdir -p src/main/java/com/pig2/slayerplus
+          cat > src/main/java/com/pig2/slayerplus/P2sEvents.java <<'P2S_EOF'
+          package com.pig2.slayerplus;
+
+          import net.minecraft.server.level.ServerPlayer;
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraftforge.event.TickEvent;
+          import net.minecraftforge.event.entity.living.LivingAttackEvent;
+          import net.minecraftforge.event.entity.living.LivingDamageEvent;
+          import net.minecraftforge.event.entity.living.LivingDeathEvent;
+          import net.minecraftforge.event.entity.living.LivingHurtEvent;
+          import net.minecraftforge.event.entity.living.LivingKnockBackEvent;
+          import net.minecraftforge.event.entity.player.AttackEntityEvent;
+          import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+          import net.minecraftforge.eventbus.api.EventPriority;
+          import net.minecraftforge.eventbus.api.SubscribeEvent;
+          import net.minecraftforge.fml.common.Mod;
+
+          import java.util.HashMap;
+          import java.util.Map;
+          import java.util.UUID;
+
+          @Mod.EventBusSubscriber(modid = Pig2SlayerPlus.MODID)
+          public class P2sEvents {
+
+              private static final Map<UUID, Long> LAST_USE = new HashMap<>();
+
+              // ---------- Bat tu khi cam kiem (lop bao ve bang su kien, ben canh mixin) ----------
+
+              @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
+              public static void onAttack(LivingAttackEvent e) {
+                  if (GodHelper.isGod(e.getEntity())) {
+                      e.setCanceled(true);
+                  }
+              }
+
+              @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
+              public static void onHurt(LivingHurtEvent e) {
+                  if (GodHelper.isGod(e.getEntity())) {
+                      e.setCanceled(true);
+                  }
+              }
+
+              @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
+              public static void onDamage(LivingDamageEvent e) {
+                  if (GodHelper.isGod(e.getEntity())) {
+                      e.setCanceled(true);
+                  }
+              }
+
+              @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
+              public static void onDeath(LivingDeathEvent e) {
+                  if (GodHelper.isGod(e.getEntity())) {
+                      e.setCanceled(true);
+                      e.getEntity().setHealth(e.getEntity().getMaxHealth());
+                  }
+              }
+
+              @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
+              public static void onKnockback(LivingKnockBackEvent e) {
+                  if (GodHelper.isGod(e.getEntity())) {
+                      e.setCanceled(true);
+                  }
+              }
+
+              @SubscribeEvent
+              public static void onPlayerTick(TickEvent.PlayerTickEvent e) {
+                  if (e.phase == TickEvent.Phase.END && e.side.isServer() && GodHelper.isGod(e.player)) {
+                      BladePower.maintain(e.player);
+                  }
+              }
+
+              // ---------- Chuot phai voi dreams blade ----------
+
+              private static void rightClick(Player player, Entity directTarget) {
+                  if (player.level().isClientSide || !(player instanceof ServerPlayer sp)) {
+                      return;
+                  }
+                  if (!GodHelper.holdsBlade(sp)) {
+                      return;
+                  }
+                  long now = sp.level().getGameTime();
+                  Long last = LAST_USE.get(sp.getUUID());
+                  if (last != null && now - last < 5L) {
+                      return;
+                  }
+                  LAST_USE.put(sp.getUUID(), now);
+
+                  int n = BladePower.sweep(sp, sp.isShiftKeyDown());
+                  if (directTarget != null && BladePower.forceRemove(directTarget)) {
+                      n++;
+                  }
+                  BladePower.say(sp, "Dreams blade: da xoa " + n + " entity" + (sp.isShiftKeyDown() ? " (che do tat ca)" : ""));
+              }
+
+              @SubscribeEvent
+              public static void onRightClickItem(PlayerInteractEvent.RightClickItem e) {
+                  rightClick(e.getEntity(), null);
+              }
+
+              @SubscribeEvent
+              public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock e) {
+                  rightClick(e.getEntity(), null);
+              }
+
+              @SubscribeEvent
+              public static void onRightClickEntity(PlayerInteractEvent.EntityInteract e) {
+                  rightClick(e.getEntity(), e.getTarget());
+              }
+
+              // ---------- Danh la xoa ----------
+
+              @SubscribeEvent
+              public static void onAttackEntity(AttackEntityEvent e) {
+                  Player p = e.getEntity();
+                  if (p.level().isClientSide || !GodHelper.holdsBlade(p)) {
+                      return;
+                  }
+                  BladePower.forceRemove(e.getTarget());
               }
           }
           P2S_EOF
@@ -215,23 +497,36 @@ jobs:
               private static int remove(CommandContext<CommandSourceStack> ctx, Collection<? extends Entity> targets) {
                   int n = 0;
                   for (Entity e : targets) {
-                      if (GodHelper.isGod(e)) {
-                          continue;
-                      }
-                      try {
-                          e.setRemoved(Entity.RemovalReason.KILLED);
-                          if (!e.isRemoved()) {
-                              e.setRemoved(Entity.RemovalReason.DISCARDED);
-                          }
+                      if (BladePower.forceRemove(e)) {
                           n++;
-                      } catch (Throwable t) {
-                          // bo qua entity khong xoa duoc
                       }
                   }
                   final int count = n;
                   ctx.getSource().sendSuccess(() -> Component.literal("p2s remove: da xoa " + count + " entity"), true);
                   return n;
               }
+          }
+          P2S_EOF
+          mkdir -p src/main/java/com/pig2/slayerplus/mixin
+          cat > src/main/java/com/pig2/slayerplus/mixin/EntityAccessor.java <<'P2S_EOF'
+          package com.pig2.slayerplus.mixin;
+
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.level.entity.EntityInLevelCallback;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.gen.Accessor;
+
+          @Mixin(Entity.class)
+          public interface EntityAccessor {
+
+              @Accessor("levelCallback")
+              EntityInLevelCallback p2s$getLevelCallback();
+
+              @Accessor("removalReason")
+              Entity.RemovalReason p2s$getRemovalReason();
+
+              @Accessor("removalReason")
+              void p2s$setRemovalReason(Entity.RemovalReason reason);
           }
           P2S_EOF
           mkdir -p src/main/java/com/pig2/slayerplus/mixin
@@ -275,7 +570,7 @@ jobs:
           public abstract class LivingEntityMixin {
 
               @Shadow
-              public abstract float getHealth();
+              public abstract float getMaxHealth();
 
               @Inject(method = "hurt", at = @At("HEAD"), cancellable = true)
               private void p2s$noHurt(DamageSource source, float amount, CallbackInfoReturnable<Boolean> cir) {
@@ -293,8 +588,22 @@ jobs:
 
               @Inject(method = "setHealth", at = @At("HEAD"), cancellable = true)
               private void p2s$noHealthDrop(float value, CallbackInfo ci) {
-                  if (GodHelper.isGod((Entity) (Object) this) && value < this.getHealth()) {
+                  if (GodHelper.isGod((Entity) (Object) this) && value < this.getMaxHealth()) {
                       ci.cancel();
+                  }
+              }
+
+              @Inject(method = "getHealth", at = @At("HEAD"), cancellable = true)
+              private void p2s$fullHealth(CallbackInfoReturnable<Float> cir) {
+                  if (GodHelper.isGod((Entity) (Object) this)) {
+                      cir.setReturnValue(this.getMaxHealth());
+                  }
+              }
+
+              @Inject(method = "isDeadOrDying", at = @At("HEAD"), cancellable = true)
+              private void p2s$notDying(CallbackInfoReturnable<Boolean> cir) {
+                  if (GodHelper.isGod((Entity) (Object) this)) {
+                      cir.setReturnValue(false);
                   }
               }
           }
