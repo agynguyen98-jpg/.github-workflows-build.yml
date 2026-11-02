@@ -1,0 +1,371 @@
+name: build-pig2-slayer-plus
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.1.1
+      - name: Tao ma nguon
+        run: |
+          cat > settings.gradle <<'P2S_EOF'
+          pluginManagement {
+              repositories {
+                  gradlePluginPortal()
+                  maven { name = 'MinecraftForge'; url = 'https://maven.minecraftforge.net/' }
+                  maven { name = 'Sponge'; url = 'https://repo.spongepowered.org/repository/maven-public/' }
+              }
+              resolutionStrategy {
+                  eachPlugin {
+                      if (requested.id.id == 'org.spongepowered.mixin') {
+                          useModule('org.spongepowered:mixingradle:' + requested.version)
+                      }
+                  }
+              }
+          }
+          rootProject.name = 'pig2_slayer_plus'
+          P2S_EOF
+          cat > gradle.properties <<'P2S_EOF'
+          org.gradle.jvmargs=-Xmx3G
+          org.gradle.daemon=false
+          P2S_EOF
+          cat > build.gradle <<'P2S_EOF'
+          plugins {
+              id 'java'
+              id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+              id 'org.spongepowered.mixin' version '0.7.+'
+          }
+
+          group = 'com.pig2.slayerplus'
+          version = '1.0.0'
+          base { archivesName = 'pig2_slayer_plus' }
+
+          java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+          minecraft {
+              mappings channel: 'official', version: '1.20.1'
+          }
+
+          mixin {
+              add sourceSets.main, 'pig2slayerplus.refmap.json'
+              config 'pig2slayerplus.mixins.json'
+          }
+
+          repositories { mavenCentral() }
+
+          dependencies {
+              minecraft 'net.minecraftforge:forge:1.20.1-47.2.0'
+              annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+          }
+
+          tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+
+          jar {
+              manifest.attributes('MixinConfigs': 'pig2slayerplus.mixins.json')
+              finalizedBy 'reobfJar'
+          }
+          P2S_EOF
+          mkdir -p src/main/resources/META-INF
+          cat > src/main/resources/META-INF/mods.toml <<'P2S_EOF'
+          modLoader="javafml"
+          loaderVersion="[47,)"
+          license="All Rights Reserved"
+
+          [[mods]]
+          modId="pig2_slayer_plus"
+          version="1.0.0"
+          displayName="Pig Slayer Plus"
+          authors="you"
+          description='''Addon cho pig2_slayer: bao ve nguoi choi (tag p2s_god) va xoa entity (/p2s remove).'''
+
+          [[dependencies.pig2_slayer_plus]]
+          modId="forge"
+          mandatory=true
+          versionRange="[47,)"
+          ordering="NONE"
+          side="BOTH"
+
+          [[dependencies.pig2_slayer_plus]]
+          modId="minecraft"
+          mandatory=true
+          versionRange="[1.20.1,1.21)"
+          ordering="NONE"
+          side="BOTH"
+          P2S_EOF
+          mkdir -p src/main/resources
+          cat > src/main/resources/pack.mcmeta <<'P2S_EOF'
+          {
+            "pack": { "description": { "text": "pig2_slayer_plus resources" }, "pack_format": 15 }
+          }
+          P2S_EOF
+          mkdir -p src/main/resources
+          cat > src/main/resources/pig2slayerplus.mixins.json <<'P2S_EOF'
+          {
+            "required": false,
+            "minVersion": "0.8",
+            "package": "com.pig2.slayerplus.mixin",
+            "compatibilityLevel": "JAVA_17",
+            "refmap": "pig2slayerplus.refmap.json",
+            "priority": 2147483647,
+            "mixins": [
+              "EntityMixin",
+              "LivingEntityMixin",
+              "PlayerMixin",
+              "ServerPlayerMixin"
+            ],
+            "injectors": { "defaultRequire": 1 }
+          }
+          P2S_EOF
+          mkdir -p src/main/java/com/pig2/slayerplus
+          cat > src/main/java/com/pig2/slayerplus/Pig2SlayerPlus.java <<'P2S_EOF'
+          package com.pig2.slayerplus;
+
+          import net.minecraftforge.fml.common.Mod;
+
+          @Mod(Pig2SlayerPlus.MODID)
+          public class Pig2SlayerPlus {
+              public static final String MODID = "pig2_slayer_plus";
+
+              public Pig2SlayerPlus() {
+              }
+          }
+          P2S_EOF
+          mkdir -p src/main/java/com/pig2/slayerplus
+          cat > src/main/java/com/pig2/slayerplus/GodHelper.java <<'P2S_EOF'
+          package com.pig2.slayerplus;
+
+          import net.minecraft.world.entity.Entity;
+
+          public final class GodHelper {
+              public static final String TAG = "p2s_god";
+
+              private GodHelper() {
+              }
+
+              public static boolean isGod(Entity e) {
+                  try {
+                      return e != null && e.getTags().contains(TAG);
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              /** Chi chan viec bi giet/xoa; van cho phep doi chieu, unload chunk. */
+              public static boolean blocksRemoval(Entity.RemovalReason r) {
+                  return r == Entity.RemovalReason.KILLED || r == Entity.RemovalReason.DISCARDED;
+              }
+          }
+          P2S_EOF
+          mkdir -p src/main/java/com/pig2/slayerplus
+          cat > src/main/java/com/pig2/slayerplus/P2sCommands.java <<'P2S_EOF'
+          package com.pig2.slayerplus;
+
+          import com.mojang.brigadier.context.CommandContext;
+          import net.minecraft.commands.CommandSourceStack;
+          import net.minecraft.commands.Commands;
+          import net.minecraft.commands.arguments.EntityArgument;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.world.entity.Entity;
+          import net.minecraftforge.event.RegisterCommandsEvent;
+          import net.minecraftforge.eventbus.api.SubscribeEvent;
+          import net.minecraftforge.fml.common.Mod;
+
+          import java.util.Collection;
+
+          @Mod.EventBusSubscriber(modid = Pig2SlayerPlus.MODID)
+          public class P2sCommands {
+
+              @SubscribeEvent
+              public static void onRegister(RegisterCommandsEvent event) {
+                  event.getDispatcher().register(
+                      Commands.literal("p2s").requires(s -> s.hasPermission(2))
+                          .then(Commands.literal("god")
+                              .executes(ctx -> toggle(ctx, java.util.List.of(ctx.getSource().getEntityOrException())))
+                              .then(Commands.argument("targets", EntityArgument.entities())
+                                  .executes(ctx -> toggle(ctx, EntityArgument.getEntities(ctx, "targets")))))
+                          .then(Commands.literal("remove")
+                              .then(Commands.argument("targets", EntityArgument.entities())
+                                  .executes(ctx -> remove(ctx, EntityArgument.getEntities(ctx, "targets")))))
+                  );
+              }
+
+              private static int toggle(CommandContext<CommandSourceStack> ctx, Collection<? extends Entity> targets) {
+                  int n = 0;
+                  for (Entity e : targets) {
+                      if (e.getTags().contains(GodHelper.TAG)) {
+                          e.removeTag(GodHelper.TAG);
+                      } else {
+                          e.addTag(GodHelper.TAG);
+                      }
+                      n++;
+                  }
+                  final int count = n;
+                  ctx.getSource().sendSuccess(() -> Component.literal("p2s god: da doi trang thai cho " + count + " entity"), true);
+                  return n;
+              }
+
+              private static int remove(CommandContext<CommandSourceStack> ctx, Collection<? extends Entity> targets) {
+                  int n = 0;
+                  for (Entity e : targets) {
+                      if (GodHelper.isGod(e)) {
+                          continue;
+                      }
+                      try {
+                          e.setRemoved(Entity.RemovalReason.KILLED);
+                          if (!e.isRemoved()) {
+                              e.setRemoved(Entity.RemovalReason.DISCARDED);
+                          }
+                          n++;
+                      } catch (Throwable t) {
+                          // bo qua entity khong xoa duoc
+                      }
+                  }
+                  final int count = n;
+                  ctx.getSource().sendSuccess(() -> Component.literal("p2s remove: da xoa " + count + " entity"), true);
+                  return n;
+              }
+          }
+          P2S_EOF
+          mkdir -p src/main/java/com/pig2/slayerplus/mixin
+          cat > src/main/java/com/pig2/slayerplus/mixin/EntityMixin.java <<'P2S_EOF'
+          package com.pig2.slayerplus.mixin;
+
+          import com.pig2.slayerplus.GodHelper;
+          import net.minecraft.world.entity.Entity;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+          @Mixin(Entity.class)
+          public abstract class EntityMixin {
+
+              @Inject(method = "setRemoved", at = @At("HEAD"), cancellable = true)
+              private void p2s$blockRemoval(Entity.RemovalReason reason, CallbackInfo ci) {
+                  if (GodHelper.isGod((Entity) (Object) this) && GodHelper.blocksRemoval(reason)) {
+                      ci.cancel();
+                  }
+              }
+          }
+          P2S_EOF
+          mkdir -p src/main/java/com/pig2/slayerplus/mixin
+          cat > src/main/java/com/pig2/slayerplus/mixin/LivingEntityMixin.java <<'P2S_EOF'
+          package com.pig2.slayerplus.mixin;
+
+          import com.pig2.slayerplus.GodHelper;
+          import net.minecraft.world.damagesource.DamageSource;
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.LivingEntity;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.Shadow;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(LivingEntity.class)
+          public abstract class LivingEntityMixin {
+
+              @Shadow
+              public abstract float getHealth();
+
+              @Inject(method = "hurt", at = @At("HEAD"), cancellable = true)
+              private void p2s$noHurt(DamageSource source, float amount, CallbackInfoReturnable<Boolean> cir) {
+                  if (GodHelper.isGod((Entity) (Object) this)) {
+                      cir.setReturnValue(false);
+                  }
+              }
+
+              @Inject(method = "die", at = @At("HEAD"), cancellable = true)
+              private void p2s$noDie(DamageSource source, CallbackInfo ci) {
+                  if (GodHelper.isGod((Entity) (Object) this)) {
+                      ci.cancel();
+                  }
+              }
+
+              @Inject(method = "setHealth", at = @At("HEAD"), cancellable = true)
+              private void p2s$noHealthDrop(float value, CallbackInfo ci) {
+                  if (GodHelper.isGod((Entity) (Object) this) && value < this.getHealth()) {
+                      ci.cancel();
+                  }
+              }
+          }
+          P2S_EOF
+          mkdir -p src/main/java/com/pig2/slayerplus/mixin
+          cat > src/main/java/com/pig2/slayerplus/mixin/PlayerMixin.java <<'P2S_EOF'
+          package com.pig2.slayerplus.mixin;
+
+          import com.pig2.slayerplus.GodHelper;
+          import net.minecraft.world.damagesource.DamageSource;
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.player.Player;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(Player.class)
+          public abstract class PlayerMixin {
+
+              @Inject(method = "hurt", at = @At("HEAD"), cancellable = true)
+              private void p2s$noHurt(DamageSource source, float amount, CallbackInfoReturnable<Boolean> cir) {
+                  if (GodHelper.isGod((Entity) (Object) this)) {
+                      cir.setReturnValue(false);
+                  }
+              }
+
+              @Inject(method = "die", at = @At("HEAD"), cancellable = true)
+              private void p2s$noDie(DamageSource source, CallbackInfo ci) {
+                  if (GodHelper.isGod((Entity) (Object) this)) {
+                      ci.cancel();
+                  }
+              }
+          }
+          P2S_EOF
+          mkdir -p src/main/java/com/pig2/slayerplus/mixin
+          cat > src/main/java/com/pig2/slayerplus/mixin/ServerPlayerMixin.java <<'P2S_EOF'
+          package com.pig2.slayerplus.mixin;
+
+          import com.pig2.slayerplus.GodHelper;
+          import net.minecraft.server.level.ServerPlayer;
+          import net.minecraft.world.damagesource.DamageSource;
+          import net.minecraft.world.entity.Entity;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(ServerPlayer.class)
+          public abstract class ServerPlayerMixin {
+
+              @Inject(method = "hurt", at = @At("HEAD"), cancellable = true)
+              private void p2s$noHurt(DamageSource source, float amount, CallbackInfoReturnable<Boolean> cir) {
+                  if (GodHelper.isGod((Entity) (Object) this)) {
+                      cir.setReturnValue(false);
+                  }
+              }
+
+              @Inject(method = "die", at = @At("HEAD"), cancellable = true)
+              private void p2s$noDie(DamageSource source, CallbackInfo ci) {
+                  if (GodHelper.isGod((Entity) (Object) this)) {
+                      ci.cancel();
+                  }
+              }
+          }
+          P2S_EOF
+      - name: Build
+        run: gradle build --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pig2_slayer_plus
+          path: build/libs/*.jar
